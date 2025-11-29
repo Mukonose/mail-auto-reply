@@ -13,20 +13,54 @@ from email.mime.application import MIMEApplication
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 from groq import Groq
+from dotenv import load_dotenv
 
 # ==========================================
 # ⚙️ 設定・初期化
 # ==========================================
 
-# 🔑 鍵の設定
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
-LINE_USER_ID = os.getenv("LINE_USER_ID")
+load_dotenv()
 
-# ページ設定
-st.set_page_config(page_title="Auto-Reply Pro", page_icon="📨", layout="wide")
+# 関数：環境変数またはSecretsから鍵を取得
+def get_secret(key):
+    value = os.getenv(key)
+    if value:
+        return value
+    if key in st.secrets:
+        return st.secrets[key]
+    return None
 
-# セッション状態の初期化
+GROQ_API_KEY = get_secret("GROQ_API_KEY")
+LINE_CHANNEL_ACCESS_TOKEN = get_secret("LINE_CHANNEL_ACCESS_TOKEN")
+LINE_USER_ID = get_secret("LINE_USER_ID")
+
+# token.jsonの復元（クラウド対応）
+if not os.path.exists("token.json"):
+    if "GOOGLE_TOKEN_JSON" in st.secrets:
+        with open("token.json", "w") as f:
+            f.write(st.secrets["GOOGLE_TOKEN_JSON"])
+
+# ページ設定（スマホ向けにタイトルを短く）
+st.set_page_config(page_title="Auto-Reply", page_icon="📨", layout="wide")
+
+# 📱 スマホ用CSS（余白を削って画面を広く使う）
+st.markdown("""
+    <style>
+        .block-container {
+            padding-top: 1rem;
+            padding-bottom: 1rem;
+            padding-left: 1rem;
+            padding-right: 1rem;
+        }
+        /* ボタンを押しやすく大きくする */
+        .stButton button {
+            width: 100%;
+            height: 3rem;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
+# セッション初期化
 if "reply_count" not in st.session_state:
     st.session_state.reply_count = 0
 if "log_data" not in st.session_state:
@@ -64,6 +98,10 @@ def summarize(text, client):
         return f"AIエラー: {e}"
 
 def line_push_message(text):
+    if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID:
+        st.error("⚠️ LINE設定エラー")
+        return False
+
     url = "https://api.line.me/v2/bot/message/push"
     headers = {
         "Content-Type": "application/json",
@@ -76,7 +114,7 @@ def line_push_message(text):
     resp = requests.post(url, headers=headers, json=data)
     
     if resp.status_code != 200:
-        st.error(f"⚠️ LINE送信エラー({resp.status_code}): {resp.text}")
+        st.error(f"LINE送信エラー({resp.status_code})")
         return False
     return True
 
@@ -95,7 +133,6 @@ def create_reply(to_addr_full, subject, thread_id, message_id_reply, reply_subje
 
     msg.attach(MIMEText(reply_body, "plain"))
 
-    # PDF添付（データがある場合のみ）
     if pdf_bytes and pdf_filename:
         pdf = MIMEApplication(pdf_bytes, _subtype="pdf")
         pdf.add_header("Content-Disposition", "attachment", filename=pdf_filename)
@@ -119,15 +156,19 @@ def get_body(payload):
 
 def process_emails(max_emails, enable_filter, reply_subject, reply_body, pdf_bytes, pdf_filename):
     if not os.path.exists("token.json"):
-        st.error("token.json がありません。auth.py を実行してください。")
+        st.error("token.jsonなし")
         return
 
     creds = Credentials.from_authorized_user_file("token.json")
     service = build("gmail", "v1", credentials=creds)
     groq_client = init_groq()
 
-    results = service.users().messages().list(userId="me", q="is:unread", maxResults=max_emails).execute()
-    messages = results.get("messages", [])
+    try:
+        results = service.users().messages().list(userId="me", q="is:unread", maxResults=max_emails).execute()
+        messages = results.get("messages", [])
+    except Exception as e:
+        st.error(f"Gmailエラー: {e}")
+        return
 
     if not messages:
         return
@@ -142,12 +183,11 @@ def process_emails(max_emails, enable_filter, reply_subject, reply_body, pdf_byt
         message_id = next((h["value"] for h in headers if h["name"] == "Message-ID"), "")
 
         status = "Processed"
-        
         ignore_keywords = ["no-reply", "noreply", "mailer-daemon", "google", "amazon", "rakuten", "unknown"]
         is_spam = any(k in from_addr.lower() for k in ignore_keywords)
 
         if enable_filter and is_spam:
-            status = "Skipped (Filter ON)"
+            status = "Skipped"
             service.users().messages().modify(userId='me', id=m["id"], body={"removeLabelIds": ["UNREAD"]}).execute()
         else:
             body = get_body(payload)
@@ -156,10 +196,9 @@ def process_emails(max_emails, enable_filter, reply_subject, reply_body, pdf_byt
             line_push_message(f"📩 受信: {subject}\n\n{summary}")
             
             try:
-                # PDFの生データを渡す
                 reply = create_reply(from_addr, subject, m["threadId"], message_id, reply_subject, reply_body, pdf_bytes, pdf_filename)
                 service.users().messages().send(userId="me", body=reply).execute()
-                status = "Replied & Notified"
+                status = "Replied"
                 st.session_state.reply_count += 1
             except Exception as e:
                 status = f"Error: {str(e)}"
@@ -167,7 +206,7 @@ def process_emails(max_emails, enable_filter, reply_subject, reply_body, pdf_byt
             service.users().messages().modify(userId='me', id=m["id"], body={"removeLabelIds": ["UNREAD"]}).execute()
 
         log_entry = {
-            "Time": datetime.now().strftime("%H:%M:%S"),
+            "Time": datetime.now().strftime("%H:%M"),
             "From": from_addr,
             "Subject": subject,
             "Status": status
@@ -175,112 +214,89 @@ def process_emails(max_emails, enable_filter, reply_subject, reply_body, pdf_byt
         st.session_state.log_data.insert(0, log_entry)
 
 # ==========================================
-# 🖥️ フロントエンド
+# 🖥️ フロントエンド（スマホ対応UI）
 # ==========================================
 
-st.title("📨 自動メール返信システム")
+st.title("📨 自動メール返信 Pro")
 
-# --- サイドバー: 起動と基本設定 ---
-with st.sidebar:
-    st.header("🛠️ コントロールパネル")
-    is_active = st.toggle("システム稼働スイッチ", value=False)
-    
-    st.divider()
+# ⚠️ 重要: スマホで押しやすいように、起動スイッチを一番上に配置
+col_main_1, col_main_2 = st.columns([2, 1])
+
+with col_main_1:
+    # 起動スイッチ
+    is_active = st.toggle("システム稼働", value=False)
+
+with col_main_2:
+    # 今日の実績表示
+    st.metric("本日の返信", f"{st.session_state.reply_count} 件")
+
+# 状態表示バー
+if is_active:
+    st.success("🟢 稼働中 (Monitoring...)")
+else:
+    st.error("🔴 停止中 (Stopped)")
+
+# 📂 設定はアコーディオンに隠す（スマホの画面を占領しないため）
+with st.expander("🛠️ 詳細設定・PDF添付"):
     
     st.subheader("基本設定")
-    check_interval = st.number_input("チェック間隔（分）", 1, 60, 30)
-    max_emails = st.number_input("一度に処理する件数", 1, 20, 10)
+    check_interval = st.slider("チェック間隔（分）", 1, 60, 30)
+    enable_filter = st.checkbox("自動送信メールを除外", value=False)
     
-    enable_filter = st.checkbox("自動送信メールを除外する", value=False)
-    if not enable_filter:
-        st.warning("⚠️ フィルターOFF: 全て返信")
-
     st.divider()
     
-    if st.button("📱 LINE通知テスト"):
-        if line_push_message("🔔 設定完了！テスト通知です。"):
-            st.success("送信成功")
-        else:
-            st.error("送信失敗")
-
+    st.subheader("返信内容")
+    reply_subject = st.text_input("件名 (空欄=Re:)", value="")
+    reply_body = st.text_area("本文", value="お問い合わせありがとうございます。\n資料をお送りいたします。\nご確認のほどよろしくお願いいたします。", height=150)
+    
     st.divider()
-    if st.button("🗑️ ログリセット"):
+    
+    st.subheader("PDF添付")
+    uploaded_file = st.file_uploader("PDFをアップロード", type="pdf")
+    
+    pdf_bytes = None
+    pdf_filename = None
+    if uploaded_file is not None:
+        st.success(f"セット完了: {uploaded_file.name}")
+        pdf_bytes = uploaded_file.getvalue()
+        pdf_filename = uploaded_file.name
+        
+    st.divider()
+    if st.button("ログリセット"):
         st.session_state.reply_count = 0
         st.session_state.log_data = []
         st.rerun()
 
-# --- メインエリア ---
-
-col1, col2 = st.columns(2)
-with col1:
-    if is_active:
-        st.success(f"🟢 **稼働中** (間隔: {check_interval}分)")
-    else:
-        st.error("🔴 **停止中**")
-with col2:
-    st.metric("📅 本日の返信数", f"{st.session_state.reply_count} 件")
-
-st.divider()
-
-# 📂 タブ切り替え
-tab1, tab2 = st.tabs(["📊 処理ログ", "⚙️ 返信 & PDF設定"])
-
-# --- タブ1: ログ ---
-with tab1:
-    if st.session_state.log_data:
-        df = pd.DataFrame(st.session_state.log_data)
-        st.dataframe(df, use_container_width=True)
-    else:
-        st.info("まだ処理履歴はありません。")
-
-# --- タブ2: 返信設定 & PDFアップロード ---
-with tab2:
-    st.subheader("📝 メールの内容")
-    col_subject, col_dummy = st.columns([3, 1])
-    with col_subject:
-        reply_subject = st.text_input("件名 (空欄の場合は Re:件名)", value="")
-    
-    reply_body = st.text_area("本文", value="お問い合わせありがとうございます。\n資料をお送りいたします。\nご確認のほどよろしくお願いいたします。", height=200)
-    
-    st.divider()
-    
-    st.subheader("📎 添付ファイル (PDF)")
-    
-    # PDFスイッチ
-    enable_pdf = st.toggle("PDFファイルを添付する", value=True)
-    
-    pdf_bytes = None
-    pdf_filename = None
-
-    if enable_pdf:
-        # 📂 ここが新機能！ファイルアップローダー
-        uploaded_file = st.file_uploader("PDFファイルをここにドラッグ＆ドロップ", type="pdf")
-        
-        if uploaded_file is not None:
-            st.success(f"✅ 添付準備OK: {uploaded_file.name}")
-            pdf_bytes = uploaded_file.getvalue() # ファイルの中身データ
-            pdf_filename = uploaded_file.name    # ファイル名
-        else:
-            st.warning("⚠️ ファイルが選択されていません。メールは送信されますが添付はありません。")
-    else:
-        st.info("🔕 現在、ファイルは添付されません。")
-
+# 📊 ログ表示
+st.subheader("処理ログ")
+if st.session_state.log_data:
+    df = pd.DataFrame(st.session_state.log_data)
+    # スマホで見やすいようにカラムを絞る
+    st.dataframe(df[["Time", "Subject", "Status"]], use_container_width=True)
+else:
+    st.caption("履歴なし")
 
 # --- 自動実行ループ ---
 if is_active:
     now = datetime.now()
     if st.session_state.next_run_time is None or now >= st.session_state.next_run_time:
-        with st.spinner(f'未読メールを最大 {max_emails} 件チェック中...'):
-            process_emails(max_emails, enable_filter, reply_subject, reply_body, pdf_bytes, pdf_filename)
+        with st.spinner('チェック中...'):
+            process_emails(10, enable_filter, reply_subject, reply_body, pdf_bytes, pdf_filename)
         
         st.session_state.next_run_time = now + timedelta(minutes=check_interval)
         st.rerun()
     else:
         remaining = st.session_state.next_run_time - now
         secs_left = int(remaining.total_seconds())
-        st.caption(f"⏳ 次回のチェックまで: {secs_left} 秒")
+        # プログレスバーで視覚的に待ち時間を表示
+        st.progress(1.0 - (secs_left / (check_interval * 60)))
+        st.caption(f"次回チェックまで: {secs_left}秒")
         time.sleep(1)
+        st.rerun()
+else:
+    st.session_state.next_run_time = None
         st.rerun()
 else:
 
     st.session_state.next_run_time = None
+
