@@ -41,20 +41,27 @@ if not os.path.exists("token.json"):
             f.write(st.secrets["GOOGLE_TOKEN_JSON"])
 
 # ページ設定
-st.set_page_config(page_title="Auto-Reply", page_icon="📨", layout="wide")
+st.set_page_config(page_title="Auto-Reply Pro", page_icon="📨", layout="wide")
 
-# 📱 スマホ用CSS
+# 📱 スマホ対応CSS（タイトルサイズ調整など）
 st.markdown("""
     <style>
-        .block-container {
-            padding-top: 1rem;
-            padding-bottom: 1rem;
-            padding-left: 1rem;
-            padding-right: 1rem;
-        }
-        .stButton button {
-            width: 100%;
-            height: 3rem;
+        /* スマホ画面（幅が狭いとき）の設定 */
+        @media (max-width: 640px) {
+            /* タイトル文字を小さくして改行を防ぐ */
+            h1 {
+                font-size: 1.8rem !important;
+            }
+            /* 全体の余白を調整 */
+            .block-container {
+                padding-top: 2rem !important;
+                padding-left: 1rem !important;
+                padding-right: 1rem !important;
+            }
+            /* ボタンを押しやすく */
+            .stButton button {
+                min-height: 45px;
+            }
         }
     </style>
 """, unsafe_allow_html=True)
@@ -213,78 +220,102 @@ def process_emails(max_emails, enable_filter, reply_subject, reply_body, pdf_byt
         st.session_state.log_data.insert(0, log_entry)
 
 # ==========================================
-# 🖥️ フロントエンド（スマホ対応UI）
+# 🖥️ フロントエンド
 # ==========================================
 
-st.title("📨 自動メール返信 Pro")
+st.title("📨 自動メール返信ツール")
 
-col_main_1, col_main_2 = st.columns([2, 1])
-
-with col_main_1:
-    is_active = st.toggle("システム稼働", value=False)
-
-with col_main_2:
-    st.metric("本日の返信", f"{st.session_state.reply_count} 件")
-
-if is_active:
-    st.success("🟢 稼働中 (Monitoring...)")
-else:
-    st.error("🔴 停止中 (Stopped)")
-
-with st.expander("🛠️ 詳細設定・PDF添付"):
+# --- サイドバー ---
+with st.sidebar:
+    st.header("🛠️ 設定メニュー")
+    is_active = st.toggle("システム稼働スイッチ", value=False)
     
+    st.divider()
     st.subheader("基本設定")
-    check_interval = st.slider("チェック間隔（分）", 1, 60, 30)
+    check_interval = st.number_input("チェック間隔（分）", 1, 60, 30)
+    max_emails = st.number_input("一度に処理する件数", 1, 20, 10)
     enable_filter = st.checkbox("自動送信メールを除外", value=False)
-    
+    if not enable_filter:
+        st.warning("⚠️ 全メールに返信します")
+
     st.divider()
-    
-    st.subheader("返信内容")
-    reply_subject = st.text_input("件名 (空欄=Re:)", value="")
-    reply_body = st.text_area("本文", value="お問い合わせありがとうございます。\n資料をお送りいたします。\nご確認のほどよろしくお願いいたします。", height=150)
-    
+    if st.button("📱 LINE通知テスト"):
+        if line_push_message("🔔 テスト通知成功"):
+            st.success("成功")
+        else:
+            st.error("失敗")
+
     st.divider()
-    
-    st.subheader("PDF添付")
-    uploaded_file = st.file_uploader("PDFをアップロード", type="pdf")
-    
-    pdf_bytes = None
-    pdf_filename = None
-    if uploaded_file is not None:
-        st.success(f"セット完了: {uploaded_file.name}")
-        pdf_bytes = uploaded_file.getvalue()
-        pdf_filename = uploaded_file.name
-        
-    st.divider()
-    if st.button("ログリセット"):
+    if st.button("🗑️ ログリセット"):
         st.session_state.reply_count = 0
         st.session_state.log_data = []
         st.rerun()
 
-st.subheader("処理ログ")
-if st.session_state.log_data:
-    df = pd.DataFrame(st.session_state.log_data)
-    st.dataframe(df[["Time", "Subject", "Status"]], use_container_width=True)
-else:
-    st.caption("履歴なし")
+# --- メインエリア ---
+
+# ステータス表示
+col1, col2 = st.columns(2)
+with col1:
+    if is_active:
+        st.success(f"🟢 **稼働中** ({check_interval}分毎)")
+    else:
+        st.error("🔴 **停止中**")
+with col2:
+    st.metric("📅 本日の返信", f"{st.session_state.reply_count} 件")
+
+st.divider()
+
+# 📂 タブ切り替え（広々と使う構成を維持）
+tab1, tab2 = st.tabs(["📊 処理ログ", "⚙️ 返信 & PDF設定"])
+
+# --- タブ1: ログ ---
+with tab1:
+    if st.session_state.log_data:
+        df = pd.DataFrame(st.session_state.log_data)
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.info("履歴なし")
+
+# --- タブ2: 返信設定 & PDFアップロード ---
+with tab2:
+    st.subheader("📝 返信内容")
+    reply_subject = st.text_input("件名 (空欄=Re:)", value="")
+    reply_body = st.text_area("本文", value="お問い合わせありがとうございます。\n資料をお送りいたします。\nご確認のほどよろしくお願いいたします。", height=200)
+    
+    st.divider()
+    
+    st.subheader("📎 PDF添付")
+    enable_pdf = st.toggle("PDFファイルを添付する", value=True)
+    
+    pdf_bytes = None
+    pdf_filename = None
+
+    if enable_pdf:
+        uploaded_file = st.file_uploader("PDFファイルをドラッグ＆ドロップ", type="pdf")
+        if uploaded_file is not None:
+            st.success(f"セット完了: {uploaded_file.name}")
+            pdf_bytes = uploaded_file.getvalue()
+            pdf_filename = uploaded_file.name
+    else:
+        st.info("添付なしで送信します")
 
 # --- 自動実行ループ ---
 if is_active:
     now = datetime.now()
     if st.session_state.next_run_time is None or now >= st.session_state.next_run_time:
-        with st.spinner('チェック中...'):
-            process_emails(10, enable_filter, reply_subject, reply_body, pdf_bytes, pdf_filename)
+        with st.spinner(f'チェック中...'):
+            process_emails(max_emails, enable_filter, reply_subject, reply_body, pdf_bytes, pdf_filename)
         
         st.session_state.next_run_time = now + timedelta(minutes=check_interval)
         st.rerun()
     else:
         remaining = st.session_state.next_run_time - now
         secs_left = int(remaining.total_seconds())
-        st.progress(1.0 - (secs_left / (check_interval * 60)))
-        st.caption(f"次回チェックまで: {secs_left}秒")
+        st.caption(f"⏳ 次回チェックまで: {secs_left} 秒")
         time.sleep(1)
         st.rerun()
 else:
     st.session_state.next_run_time = None
+
 
 
