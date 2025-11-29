@@ -178,7 +178,7 @@ def process_emails(max_emails, enable_filter, reply_subject, reply_body, pdf_byt
 # 🖥️ フロントエンド
 # ==========================================
 
-st.title("📨 自動メール返信システム Pro")
+st.title("📨 自動メール返信システム")
 
 # --- サイドバー: 起動と基本設定 ---
 with st.sidebar:
@@ -282,4 +282,5 @@ if is_active:
         time.sleep(1)
         st.rerun()
 else:
+
     st.session_state.next_run_time = None
