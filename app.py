@@ -40,10 +40,10 @@ if not os.path.exists("token.json"):
         with open("token.json", "w") as f:
             f.write(st.secrets["GOOGLE_TOKEN_JSON"])
 
-# ページ設定（スマホ向けにタイトルを短く）
+# ページ設定
 st.set_page_config(page_title="Auto-Reply", page_icon="📨", layout="wide")
 
-# 📱 スマホ用CSS（余白を削って画面を広く使う）
+# 📱 スマホ用CSS
 st.markdown("""
     <style>
         .block-container {
@@ -52,7 +52,6 @@ st.markdown("""
             padding-left: 1rem;
             padding-right: 1rem;
         }
-        /* ボタンを押しやすく大きくする */
         .stButton button {
             width: 100%;
             height: 3rem;
@@ -219,24 +218,19 @@ def process_emails(max_emails, enable_filter, reply_subject, reply_body, pdf_byt
 
 st.title("📨 自動メール返信 Pro")
 
-# ⚠️ 重要: スマホで押しやすいように、起動スイッチを一番上に配置
 col_main_1, col_main_2 = st.columns([2, 1])
 
 with col_main_1:
-    # 起動スイッチ
     is_active = st.toggle("システム稼働", value=False)
 
 with col_main_2:
-    # 今日の実績表示
     st.metric("本日の返信", f"{st.session_state.reply_count} 件")
 
-# 状態表示バー
 if is_active:
     st.success("🟢 稼働中 (Monitoring...)")
 else:
     st.error("🔴 停止中 (Stopped)")
 
-# 📂 設定はアコーディオンに隠す（スマホの画面を占領しないため）
 with st.expander("🛠️ 詳細設定・PDF添付"):
     
     st.subheader("基本設定")
@@ -267,11 +261,9 @@ with st.expander("🛠️ 詳細設定・PDF添付"):
         st.session_state.log_data = []
         st.rerun()
 
-# 📊 ログ表示
 st.subheader("処理ログ")
 if st.session_state.log_data:
     df = pd.DataFrame(st.session_state.log_data)
-    # スマホで見やすいようにカラムを絞る
     st.dataframe(df[["Time", "Subject", "Status"]], use_container_width=True)
 else:
     st.caption("履歴なし")
@@ -288,15 +280,11 @@ if is_active:
     else:
         remaining = st.session_state.next_run_time - now
         secs_left = int(remaining.total_seconds())
-        # プログレスバーで視覚的に待ち時間を表示
         st.progress(1.0 - (secs_left / (check_interval * 60)))
         st.caption(f"次回チェックまで: {secs_left}秒")
         time.sleep(1)
         st.rerun()
 else:
     st.session_state.next_run_time = None
-        st.rerun()
-else:
 
-    st.session_state.next_run_time = None
 
